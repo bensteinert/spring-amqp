@@ -26,8 +26,14 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 
+import java.lang.annotation.Documented;
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 
@@ -41,8 +47,11 @@ import org.springframework.amqp.support.AmqpHeaders;
 import org.springframework.amqp.support.converter.Jackson2JsonMessageConverter;
 import org.springframework.amqp.support.converter.SimpleMessageConverter;
 import org.springframework.beans.factory.support.StaticListableBeanFactory;
+import org.springframework.core.MethodParameter;
 import org.springframework.messaging.Message;
+import org.springframework.messaging.handler.annotation.Payload;
 import org.springframework.messaging.handler.annotation.support.DefaultMessageHandlerMethodFactory;
+import org.springframework.messaging.handler.invocation.HandlerMethodArgumentResolver;
 import org.springframework.messaging.handler.invocation.InvocableHandlerMethod;
 import org.springframework.messaging.support.MessageBuilder;
 import org.springframework.util.ReflectionUtils;
@@ -204,6 +213,71 @@ public class MessagingMessageListenerAdapterTests {
 		assertEquals(Foo.class, this.sample.payload.getClass());
 	}
 
+	@Test
+	public void withFoo() throws Exception {
+		org.springframework.amqp.core.Message message = MessageTestUtils.createTextMessage("{ \"foo\" : \"bar\" }");
+		Channel channel = mock(Channel.class);
+		MessagingMessageListenerAdapter listener = getSimpleInstance("withFoo", Foo.class);
+		listener.setMessageConverter(new Jackson2JsonMessageConverter());
+		message.getMessageProperties().setContentType("application/json");
+		listener.onMessage(message, channel);
+		assertEquals(Foo.class, this.sample.payload.getClass());
+	}
+
+	@Test
+	public void withFooAnnotated() throws Exception {
+		org.springframework.amqp.core.Message message = MessageTestUtils.createTextMessage("{ \"foo\" : \"bar\" }");
+		Channel channel = mock(Channel.class);
+		MessagingMessageListenerAdapter listener = getSimpleInstance("withFooAnnotated", Foo.class);
+		listener.setMessageConverter(new Jackson2JsonMessageConverter());
+		message.getMessageProperties().setContentType("application/json");
+		listener.onMessage(message, channel);
+		assertEquals(Foo.class, this.sample.payload.getClass());
+	}
+
+
+	@Test
+	public void withFooAndCustomArgumentAmbiguousTargetForPayloadLeadsToException() {
+		org.springframework.amqp.core.Message message = MessageTestUtils.createTextMessage("{ \"foo\" : \"bar\" }");
+		Channel channel = mock(Channel.class);
+		MessagingMessageListenerAdapter listener = getSimpleInstanceWithCustomArgumentResolver("withFooAndCustomArgument", Foo.class, CustomArg.class);
+		listener.setMessageConverter(new Jackson2JsonMessageConverter());
+		message.getMessageProperties().setContentType("application/json");
+		try {
+			listener.onMessage(message, channel);
+			fail("Should have thrown an exception");
+		}
+		catch (ListenerExecutionFailedException ex) {
+			assertEquals(org.springframework.messaging.converter.MessageConversionException.class,
+					ex.getCause().getClass());
+		}
+		catch (Exception ex) {
+			fail("Should not have thrown an " + ex.getClass().getSimpleName());
+		}
+	}
+
+	@Test
+	public void withFooAnnotatedAndCustomArgument() throws Exception {
+		org.springframework.amqp.core.Message message = MessageTestUtils.createTextMessage("{ \"foo\" : \"bar\" }");
+		Channel channel = mock(Channel.class);
+		MessagingMessageListenerAdapter listener = getSimpleInstanceWithCustomArgumentResolver("withFooAnnotatedAndCustomArgument", Foo.class, CustomArg.class);
+		listener.setMessageConverter(new Jackson2JsonMessageConverter());
+		message.getMessageProperties().setContentType("application/json");
+		listener.onMessage(message, channel);
+		assertEquals(Foo.class, this.sample.payload.getClass());
+	}
+
+	@Test
+	public void withFooAnnotatedAndCustomArgumentAnnotated() throws Exception {
+		org.springframework.amqp.core.Message message = MessageTestUtils.createTextMessage("{ \"foo\" : \"bar\" }");
+		Channel channel = mock(Channel.class);
+		MessagingMessageListenerAdapter listener = getSimpleInstanceWithCustomArgumentResolver("withFooAnnotatedAndCustomArgumentAnnotated", Foo.class, CustomArg.class);
+		listener.setMessageConverter(new Jackson2JsonMessageConverter());
+		message.getMessageProperties().setContentType("application/json");
+		listener.onMessage(message, channel);
+		assertEquals(Foo.class, this.sample.payload.getClass());
+	}
+
 
 	@Test
 	public void genericMessageTest3() throws Exception {
@@ -230,6 +304,34 @@ public class MessagingMessageListenerAdapterTests {
 	protected MessagingMessageListenerAdapter createInstance(Method m, boolean returnExceptions) {
 		MessagingMessageListenerAdapter adapter = new MessagingMessageListenerAdapter(null, m, returnExceptions, null);
 		adapter.setHandlerAdapter(new HandlerAdapter(factory.createInvocableHandlerMethod(sample, m)));
+		return adapter;
+	}
+
+	protected MessagingMessageListenerAdapter getSimpleInstanceWithCustomArgumentResolver(String methodName, Class<?>... parameterTypes) {
+		Method m = ReflectionUtils.findMethod(SampleBean.class, methodName, parameterTypes);
+		return createInstanceWithCustomArgumentResolver(m, false);
+	}
+
+	protected MessagingMessageListenerAdapter createInstanceWithCustomArgumentResolver(Method m, boolean returnExceptions) {
+		MessagingMessageListenerAdapter adapter = new MessagingMessageListenerAdapter(null, m, returnExceptions, null);
+		DefaultMessageHandlerMethodFactory isolatedFactory = new DefaultMessageHandlerMethodFactory();
+
+		isolatedFactory.setCustomArgumentResolvers(Collections.singletonList(new HandlerMethodArgumentResolver() {
+			@Override
+			public boolean supportsParameter(MethodParameter parameter) {
+				return CustomArg.class.equals(parameter.getParameterType());
+			}
+
+			@Override
+			public Object resolveArgument(MethodParameter parameter, Message<?> message) {
+				CustomArg customArg = new CustomArg();
+				customArg.setArg("resolved");
+				return customArg;
+			}
+		}));
+
+		initializeFactory(isolatedFactory);
+		adapter.setHandlerAdapter(new HandlerAdapter(isolatedFactory.createInvocableHandlerMethod(sample, m)));
 		return adapter;
 	}
 
@@ -291,6 +393,34 @@ public class MessagingMessageListenerAdapterTests {
 		}
 
 		@SuppressWarnings("unused")
+		public void withFooAnnotated(@Payload Foo foo) {
+			this.payload = foo;
+		}
+
+		/**
+		 * Clearly ambiguous and should not be handled automatically
+		 */
+		public void withFooAndCustomArgument(Foo foo, CustomArg arg) {
+			this.payload = foo;
+		}
+
+		/**
+		 * All arguments should be resolvable. But since {@link MessagingMessageListenerAdapter}.determineInferredType()
+		 * automatically accepts all non Message related parameters without annotation, this test fails.
+		 */
+		public void withFooAnnotatedAndCustomArgument(@Payload Foo foo, CustomArg arg) {
+			this.payload = foo;
+		}
+
+		/**
+		 * All arguments are resolvable, because the parameter to be resolved by the custom HandlerMethodArgumentResolver
+		 * is annotated with (an arbitrary) runtime annotation. In fact {@link Deprecated} would work also.
+		 */
+		public void withFooAnnotatedAndCustomArgumentAnnotated(@Payload Foo foo, @Custom CustomArg arg) {
+			this.payload = foo;
+		}
+
+		@SuppressWarnings("unused")
 		public void withGenericMessageFooType(Message<Foo> message) {
 			this.payload = message.getPayload();
 		}
@@ -322,5 +452,26 @@ public class MessagingMessageListenerAdapterTests {
 		}
 
 	}
+
+	private static class CustomArg {
+
+		private String arg;
+
+		@SuppressWarnings("unused")
+		public String getArg() {
+			return this.arg;
+		}
+
+		@SuppressWarnings("unused")
+		public void setArg(String arg) {
+			this.arg = arg;
+		}
+
+	}
+
+	@Target({ElementType.PARAMETER})
+	@Retention(RetentionPolicy.RUNTIME)
+	@Documented
+	private @interface Custom {}
 
 }
